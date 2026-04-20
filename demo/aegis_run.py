@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
 from pathlib import Path
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
@@ -65,85 +65,101 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _derive_loop_controls_from_plan(plan: Any, control: ControlDirectives, config: DemoConfig) -> None:
-    status = _maybe_get(plan, "status", default="unknown")
-    actions = _maybe_get(plan, "actions", default=[]) or []
-    prediction = _maybe_get(plan, "prediction", default=None)
-    raw = _maybe_get(plan, "raw", default={}) or {}
-    confidence = _maybe_get(raw, "confidence", default=None)
-
-    confidence_val = _coerce_float(confidence, 0.75)
-
-    control.notes.append(f"Aegis status: {status}")
-    control.notes.append(f"Aegis confidence: {confidence_val}")
-
-    action_types = set()
-    for action in actions:
-        action_type = _maybe_get(action, "type", default=None)
-        if action_type:
-            action_types.add(action_type)
-
-    # Derive behavior from live plan semantics instead of guessing raw fields.
-    if status == "stable":
-        control.stop_on_valid = True
-        control.suppress_duplicate_actions = True
-        control.max_retries_override = min(1, config.max_retries)
-
-        # Stable system + medium confidence => keep loop tighter.
-        control.retry_bias = 0.15 if confidence_val >= 0.7 else 0.25
-        control.replan_bias = 0.15 if confidence_val >= 0.7 else 0.25
-
-    if "stabilize_system" in action_types:
-        control.stop_on_valid = True
-        control.retry_bias = min(control.retry_bias, 0.2)
-        control.notes.append("Derived: stabilize_system -> suppress unnecessary retries.")
-
-    if "increase_constraints" in action_types:
-        control.replan_bias = min(control.replan_bias, 0.2)
-        control.suppress_duplicate_actions = True
-        control.notes.append("Derived: increase_constraints -> tighter coordination and dedupe.")
-
-    if "adjust_flexibility" in action_types:
-        # Allow some flexibility without reopening the loop too much.
-        control.validator_strictness = min(control.validator_strictness, 0.6)
-        control.notes.append("Derived: adjust_flexibility -> slightly relax validator rigidity.")
-
-    if prediction is not None:
-        control.notes.append(f"Aegis prediction: {prediction}")
-
-
-def _plan_to_control(plan: Any, config: DemoConfig) -> ControlDirectives:
+def _result_to_control(result: Any, config: DemoConfig) -> ControlDirectives:
     control = _fallback_aegis_control(config)
 
-    controls = _maybe_get(plan, "controls", default={}) or {}
-    generation = _maybe_get(controls, "generation", default={}) or {}
-    prompt_controls = _maybe_get(controls, "prompt", default={}) or {}
-    raw = _maybe_get(plan, "raw", default={}) or {}
+    scope_data = _maybe_get(result, "scope_data", default={}) or {}
+    output = _maybe_get(result, "output", default={}) or {}
 
-    # Real live fields confirmed from AegisPlan output.
+    generation = _maybe_get(scope_data, "generation", default={}) or {}
+    loop_controls = _maybe_get(scope_data, "loop_controls", default={}) or {}
+
     control.temperature = _coerce_float(
         _maybe_get(generation, "temperature", default=control.temperature),
         control.temperature,
     )
+    control.validator_strictness = _coerce_float(
+        _maybe_get(loop_controls, "validator_strictness", default=control.validator_strictness),
+        control.validator_strictness,
+    )
+    control.retry_bias = _coerce_float(
+        _maybe_get(loop_controls, "retry_bias", default=control.retry_bias),
+        control.retry_bias,
+    )
+    control.replan_bias = _coerce_float(
+        _maybe_get(loop_controls, "replan_bias", default=control.replan_bias),
+        control.replan_bias,
+    )
+    control.stop_on_valid = _coerce_bool(
+        _maybe_get(loop_controls, "stop_on_valid", default=control.stop_on_valid),
+        control.stop_on_valid,
+    )
+    control.suppress_duplicate_actions = _coerce_bool(
+        _maybe_get(
+            loop_controls,
+            "suppress_duplicate_actions",
+            default=control.suppress_duplicate_actions,
+        ),
+        control.suppress_duplicate_actions,
+    )
 
-    # Keep top_p only as note for now since ControlDirectives does not store it.
-    top_p = _maybe_get(generation, "top_p", default=None)
-    if top_p is not None:
-        control.notes.append(f"Aegis top_p: {top_p}")
+    max_retries_override = _maybe_get(loop_controls, "max_retries", "max_retries_override", default=None)
+    if max_retries_override is not None:
+        control.max_retries_override = int(max_retries_override)
 
-    prompt_suffix = _maybe_get(prompt_controls, "suffix", default=None)
-    if prompt_suffix:
-        control.notes.append(f"Aegis prompt suffix: {prompt_suffix}")
+    max_steps_override = _maybe_get(loop_controls, "max_steps", "max_steps_override", default=None)
+    if max_steps_override is not None:
+        control.max_steps_override = int(max_steps_override)
 
-    summary = _maybe_get(raw, "summary", default=None)
-    cause = _maybe_get(raw, "cause", default=None)
+    scope = _maybe_get(result, "scope", default="unknown")
+    control.notes.append(f"Aegis scope: {scope}")
 
-    if summary:
-        control.notes.append(f"Plan summary: {summary}")
-    if cause:
-        control.notes.append(f"Plan cause: {cause}")
+    explanation = _maybe_get(result, "explanation", default=None)
+    if explanation:
+        control.notes.append(f"Aegis explanation: {explanation}")
 
-    _derive_loop_controls_from_plan(plan, control, config)
+    used_fallback = _coerce_bool(_maybe_get(result, "used_fallback", default=False), False)
+    control.notes.append(f"Aegis used_fallback: {used_fallback}")
+
+    actions = _maybe_get(result, "actions", default=[]) or []
+    if actions:
+        action_types = []
+        for action in actions:
+            action_type = _maybe_get(action, "type", default=None)
+            if action_type:
+                action_types.append(action_type)
+
+        if action_types:
+            control.notes.append(f"Aegis actions: {', '.join(action_types)}")
+
+        if "stabilize_system" in action_types:
+            control.stop_on_valid = True
+            control.retry_bias = min(control.retry_bias, 0.2)
+        if "increase_constraints" in action_types:
+            control.replan_bias = min(control.replan_bias, 0.2)
+            control.suppress_duplicate_actions = True
+        if "adjust_flexibility" in action_types:
+            control.validator_strictness = min(control.validator_strictness, 0.6)
+
+    trace = _maybe_get(result, "trace", default=[]) or []
+    if trace:
+        control.notes.append(f"Aegis trace events: {len(trace)}")
+
+    metrics = _maybe_get(result, "metrics", default={}) or {}
+    confidence = _maybe_get(metrics, "confidence", default=None)
+    if confidence is not None:
+        control.notes.append(f"Aegis confidence: {confidence}")
+
+    debug_summary = _maybe_get(result, "debug_summary", default=None)
+    if callable(debug_summary):
+        control.notes.append(f"Aegis debug: {debug_summary()}")
+
+    final_answer = _maybe_get(result, "final_answer", default=None)
+    if final_answer:
+        control.notes.append(f"Aegis final_answer: {final_answer}")
+    elif output:
+        control.notes.append("Aegis output returned for step scope.")
+
     return control
 
 
@@ -163,9 +179,13 @@ def build_aegis_control(
         return control
 
     try:
-        from aegis import AegisClient
+        from aegis import AegisClient, AegisConfig
 
-        client = AegisClient(api_key=api_key, base_url=base_url)
+        client = AegisClient(
+            api_key=api_key,
+            base_url=base_url,
+            config=AegisConfig(mode="balanced"),
+        )
 
         symptoms = [
             "agent_disagreement",
@@ -175,14 +195,15 @@ def build_aegis_control(
         ]
         severity = "medium"
 
-        metadata = {
+        step_input: dict[str, Any] = {
             "workflow": "multi_agent_case_resolution",
             "agents": ["planner", "executor", "validator"],
             "target_outcome": "same_correct_result_with_less_execution_waste",
+            "base_prompt": BASE_PROMPT,
         }
 
         if state is not None:
-            metadata.update(
+            step_input.update(
                 {
                     "case_id": state.case.case_id,
                     "customer_tier": state.case.customer_tier,
@@ -204,26 +225,27 @@ def build_aegis_control(
             if state.success_declared_at_step is not None:
                 symptoms.append("post_success_churn")
 
-        plan = client.auto(
-            system_type="multi_agent",
-            base_prompt=BASE_PROMPT,
+        result = client.auto().step(
+            step_name="coordinator_stabilization",
+            step_input=step_input,
             symptoms=symptoms,
             severity=severity,
-            metadata=metadata,
         )
 
-        control = _plan_to_control(plan, config)
+        control = _result_to_control(result, config)
         control.mode = "aegis"
-        control.notes.append("Control derived from live Aegis plan.")
+        control.notes.append("Control derived from Aegis step runtime result.")
         return control
 
     except Exception as e:
         control = _fallback_aegis_control(config)
-        control.notes.extend([
-            "Fallback Aegis profile.",
-            "Use lower retry/replan bias and stop cleanly on valid outcomes.",
-            f"Live Aegis call failed; using fallback profile. Error: {e}",
-        ])
+        control.notes.extend(
+            [
+                "Fallback Aegis profile.",
+                "Use lower retry/replan bias and stop cleanly on valid outcomes.",
+                f"Live Aegis call failed; using fallback profile. Error: {e}",
+            ]
+        )
         return control
 
 

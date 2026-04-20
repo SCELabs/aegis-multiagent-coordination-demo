@@ -1,223 +1,137 @@
 # Aegis Multi-Agent Coordination Demo
 
-Your multi-agent system is probably working.
+This repository shows a **multi-agent coordination workflow** running in two modes:
 
-But it's wasting steps, retrying unnecessarily, and continuing long after the correct answer is already found.
+- baseline (no runtime stabilization)
+- with Aegis runtime stabilization
 
-This repo shows that clearly — and fixes it.
-
----
-
-## ⚡ What this demo proves
-
-We run the **same multi-agent system twice**:
-
-* once as baseline
-* once with Aegis
-
-Same logic. Same cases. Same outcomes.
-
-Only difference:
-
-Aegis sits above the loop and stabilizes execution.
+The core workflow is unchanged in both runs. Aegis is inserted at the coordination boundary and returns runtime guidance that the loop applies.
 
 ---
 
-## 🧠 The system
+## What this demo proves
 
-A realistic multi-agent workflow:
-
-* Planner → decides next step
-* Executor → applies policy and proposes decision
-* Validator → checks correctness and triggers retries/replans
-* Coordinator → manages the loop
-
-This is intentionally designed to resemble real-world systems:
-
-* agent disagreement
-* validator second-guessing
-* unnecessary replanning
-* post-success drift
+- The same planner/executor/validator loop can run with and without Aegis.
+- Aegis can stabilize runtime behavior (retries, replans, drift) without changing the underlying model logic.
+- You can inspect the returned `AegisResult` surface (`actions`, `trace`, `metrics`, `used_fallback`, `explanation`, `scope`, `scope_data`).
 
 ---
 
-## 📉 Baseline behavior
+## Where Aegis is inserted
 
-The system works… but:
+Aegis is called at the **coordination step boundary** using the **step scope**:
 
-* agents overthink and re-check decisions
-* validator triggers unnecessary replans
-* duplicate actions occur
-* the system continues after success
-* LLM calls accumulate with no gain
+- `client.auto().step(...)`
+
+This is the smallest correct scope for this demo because the intervention point is the coordinator behavior (not direct LLM prompting and not retrieval flow).
 
 ---
 
-## ⚙️ With Aegis
+## Runtime SDK surface used
 
-Aegis analyzes the system and returns:
+```python
+from aegis import AegisClient, AegisConfig
 
-* runtime controls (temperature, prompt constraints)
-* stabilization actions
-* coordination guidance
+client = AegisClient(
+    api_key=os.environ["AEGIS_API_KEY"],
+    base_url=os.environ["AEGIS_BASE_URL"],
+    config=AegisConfig(mode="balanced"),
+)
 
-We translate that into:
+result = client.auto().step(...)
+```
 
-* fewer retries
-* fewer replans
-* no duplicate work
-* clean termination after success
+The demo maps the returned `AegisResult` into loop controls and logs key signals from:
 
----
-
-## 📊 Results
-
-BASELINE
-
-* 5/5 correct
-* 4.2 average steps
-* 12.6 average LLM calls
-* 2 retries
-* 7 replans
-* 5 post-success steps
-
-WITH AEGIS
-
-* 5/5 correct
-* 2.0 average steps
-* 6.0 average LLM calls
-* 0 retries
-* 0 replans
-* 0 post-success steps
-
-RESULT
-
-* 52% fewer steps
-* 52% fewer LLM calls
-* same completion quality
+- `result.actions`
+- `result.trace`
+- `result.metrics`
+- `result.explanation`
+- `result.used_fallback`
+- `result.scope`
+- `result.scope_data`
+- `result.debug_summary()` (when available)
 
 ---
 
-## 🔍 What’s actually happening
+## Workflow summary
 
-Aegis does not make your model smarter.
+The demo workflow has four roles:
 
-It makes your system more coherent.
+- Planner → picks next action
+- Executor → proposes decision
+- Validator → checks decision and requests retry/replan when needed
+- Coordinator loop → advances the run until completion
 
-In this demo:
-
-* Aegis detects instability patterns:
-
-  * over-replanning
-  * unnecessary retries
-  * rigid vs flexible mismatch
-
-* Returns a plan:
-
-  * adjust flexibility
-  * stabilize execution
-  * increase coordination constraints
-
-* The coordinator translates that into behavior:
-
-  * tighter retry control
-  * reduced replanning
-  * stop after valid outcome
+Aegis stabilizes the runtime behavior of the coordinator loop by reducing unnecessary retries/replans and helping terminate cleanly on valid outcomes.
 
 ---
 
-## 🧩 Key idea
+## Setup
 
-Same intelligence. Better execution.
+### 1) Clone
 
-Most systems don’t fail because the model is wrong.
-
-They fail because:
-
-* they don’t know when to stop
-* they re-run good answers
-* they drift under uncertainty
-
-Aegis fixes that layer.
-
----
-
-## 🚀 Try it yourself
-
-### 1. Clone
-
+```bash
 git clone https://github.com/SCELabs/aegis-multiagent-coordination-demo.git
 cd aegis-multiagent-coordination-demo
+```
 
-### 2. Install
+### 2) Install dependencies
 
+```bash
 pip install -r requirements.txt
-pip install scelabs-aegis
+```
 
-### 3. Configure
+### 3) Configure environment
 
-Create a `.env` file in the root:
+Copy `.env.example` to `.env` and set values:
 
-AEGIS_API_KEY=your_key_here
-AEGIS_BASE_URL=https://your-aegis-backend-url
+```bash
+cp .env.example .env
+```
 
-### 4. Run baseline
+Required:
 
+- `AEGIS_API_KEY`
+- `AEGIS_BASE_URL`
+
+`AEGIS_BASE_URL` is explicit and configurable. If your Aegis backend is local, set a localhost URL; otherwise set your deployed endpoint.
+
+---
+
+## Run
+
+### Baseline
+
+```bash
 python scripts/run_baseline.py
+```
 
-### 5. Run with Aegis
+### With Aegis stabilization
 
+```bash
 python scripts/run_aegis.py
+```
 
-### 6. Compare
+### Compare outputs
 
+```bash
 python scripts/compare_runs.py
+```
+
+Artifacts are written to `results/`.
 
 ---
 
-## 🔗 Get started with Aegis
+## Notes on behavior
 
-Install the SDK:
-
-pip install scelabs-aegis
-
-Explore the SDK and examples here:
-https://github.com/SCELabs/aegis-client
+- If Aegis credentials are not configured (or a live call fails), the demo uses an internal fallback stabilization profile so the run remains executable.
+- The fallback path is explicitly logged in run notes.
+- The purpose of this fallback is demo continuity, not replacing live Aegis responses.
 
 ---
 
-## 🧠 How Aegis fits into your system
+## Aegis client SDK
 
-You don’t rewrite your system.
-
-You don’t retrain your models.
-
-You add Aegis above your loop:
-
-* observe behavior
-* detect instability
-* apply runtime controls
-
-That’s it.
-
----
-
-## 🎯 When Aegis is most useful
-
-* multi-agent workflows
-* tool-using agents
-* retry-heavy systems
-* systems with validation loops
-* anything with coordination drift
-
----
-
-## 📌 Final takeaway
-
-If your system works but feels inefficient, unstable, or inconsistent…
-
-You don’t need a bigger model.
-
-You need a control layer.
-
-That’s what Aegis is.
+- SDK/package: `scelabs-aegis`
+- Source repo: https://github.com/SCELabs/aegis-client
