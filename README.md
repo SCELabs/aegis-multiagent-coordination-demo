@@ -9,6 +9,16 @@ The core workflow is unchanged in both runs. Aegis is inserted at the coordinati
 
 ---
 
+Same quality, materially better coordination efficiency:
+
+- Correct cases: 5 -> 5
+- Avg steps: 4.2 -> 2.0
+- Avg LLM calls: 12.6 -> 6.0
+- Retries: 2 -> 0
+- Replans: 7 -> 0
+
+---
+
 ## What this demo proves
 
 - The same planner/executor/validator loop can run with and without Aegis.
